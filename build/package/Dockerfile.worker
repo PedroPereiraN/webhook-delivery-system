@@ -1,0 +1,12 @@
+FROM golang:1.27.1-bookworm
+
+WORKDIR /worker
+
+RUN go install github.com/air-verse/air@latest
+
+COPY go.* ./
+RUN go mod download
+
+COPY . .
+
+CMD ["sh", "-c", "air -c .air.worker.toml"]

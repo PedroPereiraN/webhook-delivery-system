@@ -1,0 +1,21 @@
+FROM golang:1.27.1-bookworm
+
+WORKDIR /api
+
+# comentando as linhas que servem para criar a documentação pois isso ainda não foi implementado
+#RUN go install github.com/swaggo/swag/cmd/swag@latest
+
+RUN go install github.com/air-verse/air@latest
+
+COPY go.* ./
+
+#RUN go mod download
+
+COPY . .
+
+# comentando as linhas que servem para criar a documentação pois isso ainda não foi implementado
+#RUN swag init -g ./main.go ./adapter/input/controller/user.controller.go -o ./main.go
+
+EXPOSE 8080
+
+CMD ["sh", "-c", "air -c .air.api.toml"]

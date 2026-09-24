@@ -1,0 +1,68 @@
+services:
+  api:
+    build:
+      context: .
+      dockerfile: build/package/Dockerfile.api
+    volumes:
+      - .:/api
+    ports:
+      - "8080:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    networks:
+      - webhook-delivery-system-network
+
+  worker:
+    build:
+      context: .
+      dockerfile: build/package/Dockerfile.worker
+    volumes:
+      - .:/worker
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    networks:
+      - webhook-delivery-system-network
+    # deploy:
+    #   replicas: 3
+
+  postgres:
+    image: postgres:17
+    restart: always
+    environment:
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_USER: postgres
+      POSTGRES_DB: db
+    ports:
+      - 5432:5432
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - webhook-delivery-system-network
+  pgadmin:
+    image: dpage/pgadmin4
+    ports:
+      - "5050:80"
+    networks:
+      - webhook-delivery-system-network
+  redis:
+    image: redis:7
+    networks:
+      - webhook-delivery-system-network
+
+volumes:
+  pgdata:
+
+networks:
+  webhook-delivery-system-network:
+    driver: bridge
