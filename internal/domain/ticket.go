@@ -7,11 +7,10 @@ import (
 )
 
 type Ticket struct {
-	ID          uuid.UUID
-	ReserverdBy uuid.UUID
-	BuyedBy     uuid.UUID
-	price       float32
-	CreatedAt   time.Time
-	UpdatedAt   time.Time
-	DeletedAt   time.Time
+	ID         uuid.UUID
+	StockID    uuid.UUID
+	ReservedBy uuid.UUID
+	ReservedAt time.Time
+	CreatedAt  time.Time
+	DeletedAt  time.Time
 }

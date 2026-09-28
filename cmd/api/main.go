@@ -40,5 +40,27 @@ func main() {
 	r.PUT("/customers", cController.Update)
 	r.DELETE("/customers", cController.Delete)
 
+	sRepository := repository.NewStockRepository(db)
+
+	err = sRepository.CreateTable()
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	err = sRepository.CreateDefaultStock()
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	tRepository := repository.NewTicketRepository(db)
+
+	tService := service.NewTicketService(tRepository)
+
+	tController := controller.NewTicketController(tService)
+
+	r.POST("/tickets", tController.Create)
+	r.GET("/tickets", tController.List)
+	r.DELETE("/tickets", tController.Delete)
+
 	r.Run()
 }
