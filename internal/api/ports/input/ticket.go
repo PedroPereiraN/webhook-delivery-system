@@ -7,7 +7,7 @@ import (
 )
 
 type TicketService interface {
-	Create(*model.CreateTicket) (uuid.UUID, error)
+	Create(*model.CreateTicket) ([]uuid.UUID, error)
 	List(uuid.UUID) (*domain.Ticket, error)
 	Delete(uuid.UUID) (uuid.UUID, error)
 }

@@ -47,6 +47,11 @@ func main() {
 		log.Fatal(err)
 	}
 
+	sService := service.NewStockService(sRepository)
+	sController := controller.NewStockController(sService)
+
+	r.PUT("/stock/update-quantity", sController.UpdateStockQuantity)
+
 	err = sRepository.CreateDefaultStock()
 	if err != nil {
 		log.Fatal(err)
@@ -54,7 +59,12 @@ func main() {
 
 	tRepository := repository.NewTicketRepository(db)
 
-	tService := service.NewTicketService(tRepository)
+	err = tRepository.CreateTable()
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	tService := service.NewTicketService(tRepository, sRepository)
 
 	tController := controller.NewTicketController(tService)
 

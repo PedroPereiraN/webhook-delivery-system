@@ -1,10 +1,12 @@
 package controller
 
 import (
+	"errors"
 	"net/http"
 
 	"github.com/PedroPereiraN/webhook-delivery-system/internal/api/adapter/input/models"
 	"github.com/PedroPereiraN/webhook-delivery-system/internal/api/ports/input"
+	"github.com/PedroPereiraN/webhook-delivery-system/internal/domain"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 )
@@ -42,13 +44,21 @@ func (controller *ticketController) Create(c *gin.Context) {
 	}
 
 	result, err := controller.service.Create(&ticketData)
+	if errors.Is(err, domain.ErrInsufficientStock) {
+		c.JSON(http.StatusConflict, err.Error())
+
+		return
+	}
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, err.Error())
 
 		return
 	}
 
-	c.JSON(http.StatusOK, "Ticket created successfully: "+result.String())
+	c.JSON(http.StatusOK, gin.H{
+		"message": "Tickets reserved successfully",
+		"tickets": result,
+	})
 }
 
 func (controller *ticketController) List(c *gin.Context) {
