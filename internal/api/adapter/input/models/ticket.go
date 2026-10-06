@@ -11,6 +11,10 @@ type CreateTicket struct {
 	Quantity   int32     `json:"quantity" binding:"required,gt=0"`
 }
 
+type DeleteTickets struct {
+	IDs []uuid.UUID `json:"ids" binding:"required,min=1,max=100"`
+}
+
 type Ticket struct {
 	ID         uuid.UUID `json:"id"`
 	ReservedBy uuid.UUID `json:"reservedBy"`

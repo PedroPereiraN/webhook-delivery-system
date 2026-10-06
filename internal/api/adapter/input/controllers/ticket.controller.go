@@ -44,6 +44,11 @@ func (controller *ticketController) Create(c *gin.Context) {
 	}
 
 	result, err := controller.service.Create(&ticketData)
+	if errors.Is(err, domain.ErrCustomerNotFound) {
+		c.JSON(http.StatusNotFound, err.Error())
+
+		return
+	}
 	if errors.Is(err, domain.ErrInsufficientStock) {
 		c.JSON(http.StatusConflict, err.Error())
 
@@ -93,30 +98,33 @@ func (controller *ticketController) List(c *gin.Context) {
 }
 
 func (controller *ticketController) Delete(c *gin.Context) {
-	paramsID := c.Query("id")
+	var data model.DeleteTickets
 
-	if paramsID == "" {
-		c.JSON(http.StatusBadRequest, "Unspecified customer")
+	if err := c.ShouldBindJSON(&data); err != nil {
+		if err.Error() == "EOF" {
+			c.JSON(http.StatusBadRequest, "Invalid fields")
+
+			return
+		}
+		c.JSON(http.StatusBadRequest, err.Error())
 
 		return
 	}
 
-	ticketID, err := uuid.Parse(paramsID)
+	result, err := controller.service.DeleteMany(data.IDs)
+	if errors.Is(err, domain.ErrTicketNotFound) || errors.Is(err, domain.ErrCustomerNotFound) {
+		c.JSON(http.StatusNotFound, err.Error())
+
+		return
+	}
 	if err != nil {
-		c.JSON(http.StatusBadRequest, "Invalid ID")
-		return
-	}
-
-	result, err := controller.service.Delete(ticketID)
-
-	if err != nil && err.Error() == "sql: no rows in result set" {
-		c.JSON(http.StatusNotFound, "Ticket not found")
-		return
-	}
-
-	if err != nil && err.Error() != "sql: no rows in result set" {
 		c.JSON(http.StatusInternalServerError, err.Error())
+
+		return
 	}
 
-	c.JSON(http.StatusOK, "Ticket deleted successfully: "+result.String())
+	c.JSON(http.StatusOK, gin.H{
+		"message": "Tickets deleted successfully",
+		"tickets": result,
+	})
 }

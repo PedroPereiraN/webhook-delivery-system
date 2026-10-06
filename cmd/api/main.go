@@ -64,7 +64,14 @@ func main() {
 		log.Fatal(err)
 	}
 
-	tService := service.NewTicketService(tRepository, sRepository)
+	oRepository := repository.NewOutboxRepository(db)
+
+	err = oRepository.CreateTable()
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	tService := service.NewTicketService(tRepository, sRepository, cRepository)
 
 	tController := controller.NewTicketController(tService)
 

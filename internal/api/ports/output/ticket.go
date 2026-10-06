@@ -6,8 +6,8 @@ import (
 )
 
 type TicketRepository interface {
-	Create(*domain.Ticket) (uuid.UUID, error)
-	ReserveMany(uuid.UUID, []*domain.Ticket) ([]uuid.UUID, error)
+	ReserveMany(uuid.UUID, []*domain.Ticket, *domain.Outbox) ([]uuid.UUID, error)
 	FindTicketByID(uuid.UUID) (*domain.Ticket, error)
-	Delete(uuid.UUID) (uuid.UUID, error)
+	FindTicketsByIDs([]uuid.UUID) ([]*domain.Ticket, error)
+	DeleteMany([]uuid.UUID, []*domain.Outbox) error
 }

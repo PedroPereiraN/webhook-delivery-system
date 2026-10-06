@@ -1,3 +1,6 @@
+// Transactional outbox: Persist the event before attempting delivery.
+// Write the event to an outbox table or queue within the same transaction that produced the event.
+// A separate worker/process reads the outbox and delivers webhooks asynchronously.
 package domain
 
 import (
@@ -7,15 +10,12 @@ import (
 	"github.com/google/uuid"
 )
 
-// Transactional outbox: Persist the event before attempting delivery.
-// Write the event to an outbox table or queue within the same transaction that produced the event.
-// A separate worker/process reads the outbox and delivers webhooks asynchronously.
-
 type Outbox struct {
 	ID          uuid.UUID
 	CustomerID  uuid.UUID
-	TicketID    uuid.UUID
+	StockID     uuid.UUID
 	Payload     json.RawMessage
+	EventType   EventType
 	Status      EventStatus
 	Attempts    int
 	CreatedAt   time.Time
@@ -29,4 +29,11 @@ const (
 	EventProcessing EventStatus = "processing"
 	EventDelivered  EventStatus = "delivered"
 	EventFailed     EventStatus = "failed"
+)
+
+type EventType string
+
+const (
+	EventCreated EventType = "ticket.created"
+	EventDeleted EventType = "ticket.deleted"
 )
