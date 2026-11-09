@@ -10,15 +10,14 @@ import (
 	"github.com/google/uuid"
 )
 
-func NewTicketService(repository port.TicketRepository, capacity int) TicketService {
+func NewTicketService(repository port.TicketRepository) TicketService {
 	return &ticketService{
 		repository: repository,
-		capacity:   capacity,
 	}
 }
 
 type TicketService interface {
-	Create(*model.CreateTicket) ([]uuid.UUID, error)
+	CreateMany(*model.CreateTicket) ([]uuid.UUID, error)
 	List(uuid.UUID) (*domain.Ticket, error)
 	DeleteMany([]uuid.UUID) ([]uuid.UUID, error)
 	Stock() (*domain.Stock, error)
@@ -26,12 +25,10 @@ type TicketService interface {
 
 type ticketService struct {
 	repository port.TicketRepository
-	capacity   int
 }
 
-func (service *ticketService) Create(data *model.CreateTicket) ([]uuid.UUID, error) {
-	// Normaliza para que o mesmo email com outra caixa conte como o mesmo
-	// destinatário ao agrupar as devoluções.
+func (service *ticketService) CreateMany(data *model.CreateTicket) ([]uuid.UUID, error) {
+	// normalizing the email format
 	email := strings.ToLower(strings.TrimSpace(data.Email))
 
 	now := time.Now()
@@ -55,7 +52,7 @@ func (service *ticketService) Create(data *model.CreateTicket) ([]uuid.UUID, err
 		return nil, err
 	}
 
-	result, err := service.repository.ReserveMany(service.capacity, tickets, event)
+	result, err := service.repository.ReserveMany(tickets, event)
 	if err != nil {
 		return nil, err
 	}
@@ -72,8 +69,6 @@ func (service *ticketService) List(id uuid.UUID) (*domain.Ticket, error) {
 	return ticket, nil
 }
 
-// DeleteMany cancela todos os tickets ou nenhum. Gera um evento por email,
-// assim cada destinatário recebe um único email com os tickets dele.
 func (service *ticketService) DeleteMany(ids []uuid.UUID) ([]uuid.UUID, error) {
 	ids = uniqueIDs(ids)
 
@@ -123,15 +118,13 @@ func (service *ticketService) Stock() (*domain.Stock, error) {
 	}
 
 	return &domain.Stock{
-		Capacity:  service.capacity,
-		Reserved:  reserved,
-		Returned:  returned,
-		Available: max(service.capacity-reserved, 0),
+		Reserved: reserved,
+		Returned: returned,
 	}, nil
 }
 
-// uniqueIDs remove IDs repetidos mantendo a ordem, senão a contagem de
-// tickets encontrados nunca bateria com a de IDs enviados.
+// uniqueIDs removes duplicate IDs while preserving the order;
+// otherwise, the count of tickets found would never match the number of IDs submitted.
 func uniqueIDs(ids []uuid.UUID) []uuid.UUID {
 	seen := make(map[uuid.UUID]struct{}, len(ids))
 	result := make([]uuid.UUID, 0, len(ids))

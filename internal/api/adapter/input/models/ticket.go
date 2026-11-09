@@ -24,8 +24,6 @@ type Ticket struct {
 }
 
 type Stock struct {
-	Capacity  int `json:"capacity"`
-	Reserved  int `json:"reserved"`
-	Returned  int `json:"returned"`
-	Available int `json:"available"`
+	Reserved int `json:"reserved"`
+	Returned int `json:"returned"`
 }

@@ -26,9 +26,9 @@ type outboxRepository struct {
 	db *sql.DB
 }
 
-// Sem foreign keys: o evento precisa sobreviver mesmo se o ticket for
-// removido. O email fica numa coluna própria, além do payload, para dar para
-// consultar os eventos de um destinatário sem abrir o jsonb.
+// No foreign keys: the event must persist even if the ticket is removed.
+// The email is stored in a dedicated column—separate from the payload—to
+// allow querying events for a specific recipient without having to parse the JSONB.
 func (repository *outboxRepository) CreateTable() error {
 	query := `CREATE TABLE IF NOT EXISTS outbox (
 		id uuid PRIMARY KEY,
@@ -46,7 +46,7 @@ func (repository *outboxRepository) CreateTable() error {
 		return err
 	}
 
-	// Índice parcial: só os eventos que o worker ainda precisa olhar.
+	// Partial index: only the events that the worker still needs to look at.
 	indexQuery := `CREATE INDEX IF NOT EXISTS idx_outbox_due
 		ON outbox (next_retry_at)
 		WHERE status IN ('pending', 'processing')`
@@ -59,8 +59,8 @@ func (repository *outboxRepository) CreateTable() error {
 	return nil
 }
 
-// insertOutbox grava o evento usando a transação de quem chamou, para que o
-// evento só exista se a operação no ticket também for commitada.
+// insertOutbox records the event using the caller's transaction, ensuring that the
+// event only exists if the operation on the ticket is also committed.
 func insertOutbox(tx *sql.Tx, event *domain.Outbox) error {
 	query := `
 		INSERT INTO outbox (
@@ -82,7 +82,7 @@ func insertOutbox(tx *sql.Tx, event *domain.Outbox) error {
 		event.ID,
 		event.Email,
 		event.EventType,
-		// O lib/pq manda []byte como bytea, então o jsonb precisa ir como string.
+		// lib/pq sends []byte as bytea, so jsonb must be sent as a string.
 		string(event.Payload),
 		event.Status,
 		event.Attempts,
@@ -93,11 +93,12 @@ func insertOutbox(tx *sql.Tx, event *domain.Outbox) error {
 	return err
 }
 
-// ClaimPending pega até `limit` eventos vencidos e marca como processing por
-// `lease`. O SKIP LOCKED deixa várias réplicas do worker rodarem sem pegar o
-// mesmo evento. Se o worker morrer no meio da entrega, o lease expira e o
-// evento volta a ser elegível. Attempts é incrementado aqui para que um evento
-// que sempre derruba o worker não fique em loop infinito.
+// ClaimPending retrieves up to `limit` overdue events and marks them as 'processing' for
+// a specified `lease` duration. The `SKIP LOCKED` clause allows multiple worker replicas
+// to run concurrently without claiming the same event. If a worker fails during
+// delivery, the lease expires, and the event becomes eligible for processing again.
+// The `attempts` counter is incremented here to ensure that an event which consistently
+// causes a worker to crash does not result in an infinite loop.
 func (repository *outboxRepository) ClaimPending(limit int, lease time.Duration) ([]*domain.Outbox, error) {
 	query := `
 		UPDATE outbox
@@ -152,11 +153,12 @@ func (repository *outboxRepository) ClaimPending(limit int, lease time.Duration)
 	return events, nil
 }
 
-// MarkDelivered, ScheduleRetry e MarkFailed só atualizam o evento se ele
-// ainda estiver em processing com o mesmo `attempt` que o worker pegou no
-// ClaimPending. Se o lease expirou e outro worker pegou o evento de novo, o
-// attempts já mudou e o update do worker atrasado não faz nada, em vez de
-// sobrescrever o resultado da tentativa mais nova.
+// MarkDelivered, ScheduleRetry, and MarkFailed only update the event if it
+// is still in the 'processing' state with the same `attempt` value that the
+// worker retrieved during ClaimPending. If the lease has expired and another
+// worker has picked up the event, the `attempt` value will have changed;
+// consequently, the update from the delayed worker will have no effect,
+// preventing it from overwriting the result of the more recent attempt.
 func (repository *outboxRepository) MarkDelivered(id uuid.UUID, attempt int) error {
 	query := `
 		UPDATE outbox
@@ -169,7 +171,7 @@ func (repository *outboxRepository) MarkDelivered(id uuid.UUID, attempt int) err
 	return err
 }
 
-// ScheduleRetry devolve o evento para pending, elegível de novo após `delay`.
+// ScheduleRetry returns the event to pending, making it eligible again after `delay`.
 func (repository *outboxRepository) ScheduleRetry(id uuid.UUID, attempt int, delay time.Duration) error {
 	query := `
 		UPDATE outbox

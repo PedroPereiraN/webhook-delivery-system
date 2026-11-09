@@ -8,10 +8,7 @@ import (
 	"github.com/google/uuid"
 )
 
-var (
-	ErrTicketNotFound    = errors.New("one or more tickets were not found")
-	ErrInsufficientStock = errors.New("not enough tickets available")
-)
+var ErrTicketNotFound = errors.New("one or more tickets were not found")
 
 type Ticket struct {
 	ID         uuid.UUID
@@ -24,10 +21,8 @@ type Ticket struct {
 // Stock não é guardado em tabela: é calculado a partir dos tickets.
 // Reserved são os tickets ativos e Returned os devolvidos (soft delete).
 type Stock struct {
-	Capacity  int
-	Reserved  int
-	Returned  int
-	Available int
+	Reserved int
+	Returned int
 }
 
 // TicketEventPayload é o corpo que o worker vai enviar para o webhook.

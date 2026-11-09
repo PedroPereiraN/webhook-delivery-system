@@ -44,12 +44,7 @@ func (controller *ticketController) Create(c *gin.Context) {
 		return
 	}
 
-	result, err := controller.service.Create(&ticketData)
-	if errors.Is(err, domain.ErrInsufficientStock) {
-		c.JSON(http.StatusConflict, err.Error())
-
-		return
-	}
+	result, err := controller.service.CreateMany(&ticketData)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, err.Error())
 
@@ -133,9 +128,7 @@ func (controller *ticketController) Stock(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, model.Stock{
-		Capacity:  data.Capacity,
-		Reserved:  data.Reserved,
-		Returned:  data.Returned,
-		Available: data.Available,
+		Reserved: data.Reserved,
+		Returned: data.Returned,
 	})
 }

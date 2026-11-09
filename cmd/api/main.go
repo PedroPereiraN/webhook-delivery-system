@@ -4,9 +4,9 @@ import (
 	"database/sql"
 	"log"
 
-	controller "github.com/PedroPereiraN/webhook-delivery-system/internal/api/adapter/input/controllers"
+	"github.com/PedroPereiraN/webhook-delivery-system/internal/api/adapter/input/controllers"
 	"github.com/PedroPereiraN/webhook-delivery-system/internal/api/adapter/output/repository"
-	service "github.com/PedroPereiraN/webhook-delivery-system/internal/api/services"
+	"github.com/PedroPereiraN/webhook-delivery-system/internal/api/services"
 	"github.com/PedroPereiraN/webhook-delivery-system/internal/config"
 	"github.com/gin-gonic/gin"
 	_ "github.com/lib/pq"
@@ -40,7 +40,7 @@ func main() {
 		log.Fatal(err)
 	}
 
-	tService := service.NewTicketService(tRepository, config.TicketCapacity())
+	tService := service.NewTicketService(tRepository)
 
 	tController := controller.NewTicketController(tService)
 
