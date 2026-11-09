@@ -5,10 +5,13 @@ package domain
 
 import (
 	"encoding/json"
+	"errors"
 	"time"
 
 	"github.com/google/uuid"
 )
+
+var ErrDeadLetterNotFound = errors.New("failed event not found")
 
 type Outbox struct {
 	ID          uuid.UUID
@@ -19,6 +22,9 @@ type Outbox struct {
 	Attempts    int
 	CreatedAt   time.Time
 	NextRetryAt time.Time
+	// Only set when Status is failed: why the last attempt gave up and when.
+	LastError string
+	FailedAt  time.Time
 }
 
 type EventStatus string

@@ -49,5 +49,11 @@ func main() {
 	r.DELETE("/tickets", tController.Delete)
 	r.GET("/stock", tController.Stock)
 
+	dlService := service.NewDeadLetterService(oRepository)
+	dlController := controller.NewDeadLetterController(dlService)
+
+	r.GET("/dead-letters", dlController.List)
+	r.POST("/dead-letters/:id/replay", dlController.Replay)
+
 	r.Run()
 }

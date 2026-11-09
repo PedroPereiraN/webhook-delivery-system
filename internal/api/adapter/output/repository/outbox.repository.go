@@ -19,7 +19,9 @@ type OutboxRepository interface {
 	ClaimPending(limit int, lease time.Duration) ([]*domain.Outbox, error)
 	MarkDelivered(id uuid.UUID, attempt int) error
 	ScheduleRetry(id uuid.UUID, attempt int, delay time.Duration) error
-	MarkFailed(id uuid.UUID, attempt int) error
+	MarkFailed(id uuid.UUID, attempt int, reason string) error
+	ListFailed(limit int) ([]*domain.Outbox, error)
+	Replay(id uuid.UUID) (bool, error)
 }
 
 type outboxRepository struct {
@@ -42,6 +44,17 @@ func (repository *outboxRepository) CreateTable() error {
 	)`
 
 	_, err := repository.db.Exec(query)
+	if err != nil {
+		return err
+	}
+
+	// Added after the table existed, so ADD COLUMN IF NOT EXISTS updates
+	// databases created before the dead letter columns.
+	alterQuery := `ALTER TABLE outbox
+		ADD COLUMN IF NOT EXISTS last_error text,
+		ADD COLUMN IF NOT EXISTS failed_at timestamptz`
+
+	_, err = repository.db.Exec(alterQuery)
 	if err != nil {
 		return err
 	}
@@ -186,14 +199,101 @@ func (repository *outboxRepository) ScheduleRetry(id uuid.UUID, attempt int, del
 	return err
 }
 
-func (repository *outboxRepository) MarkFailed(id uuid.UUID, attempt int) error {
+// MarkFailed moves the event to the dead letters, keeping why it failed so
+// someone can decide whether a replay makes sense.
+func (repository *outboxRepository) MarkFailed(id uuid.UUID, attempt int, reason string) error {
 	query := `
 		UPDATE outbox
-		SET status = 'failed'
+		SET
+			status = 'failed',
+			last_error = $3,
+			failed_at = NOW()
 		WHERE id = $1 AND status = 'processing' AND attempts = $2
 	`
 
-	_, err := repository.db.Exec(query, id, attempt)
+	_, err := repository.db.Exec(query, id, attempt, reason)
 
 	return err
+}
+
+// ListFailed returns the dead letters, most recent failure first.
+func (repository *outboxRepository) ListFailed(limit int) ([]*domain.Outbox, error) {
+	query := `
+		SELECT id, email, event_type, payload, status, attempts, created_at, next_retry_at,
+			COALESCE(last_error, ''), failed_at
+		FROM outbox
+		WHERE status = 'failed'
+		ORDER BY failed_at DESC NULLS LAST
+		LIMIT $1
+	`
+
+	rows, err := repository.db.Query(query, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	events := make([]*domain.Outbox, 0)
+
+	for rows.Next() {
+		var event domain.Outbox
+		var payload []byte
+		var failedAt sql.NullTime
+
+		err := rows.Scan(
+			&event.ID,
+			&event.Email,
+			&event.EventType,
+			&payload,
+			&event.Status,
+			&event.Attempts,
+			&event.CreatedAt,
+			&event.NextRetryAt,
+			&event.LastError,
+			&failedAt,
+		)
+		if err != nil {
+			return nil, err
+		}
+
+		event.Payload = payload
+		event.FailedAt = failedAt.Time
+		events = append(events, &event)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	return events, nil
+}
+
+// Replay puts a failed event back in the queue as if it were new: attempts
+// start over so it gets the full retry budget again. It keeps the same id, so
+// a receiver that already processed it (e.g. the last attempt timed out after
+// the email was sent) deduplicates it. Returns false if the event does not
+// exist or is not failed.
+func (repository *outboxRepository) Replay(id uuid.UUID) (bool, error) {
+	query := `
+		UPDATE outbox
+		SET
+			status = 'pending',
+			attempts = 0,
+			next_retry_at = NOW(),
+			last_error = NULL,
+			failed_at = NULL
+		WHERE id = $1 AND status = 'failed'
+	`
+
+	result, err := repository.db.Exec(query, id)
+	if err != nil {
+		return false, err
+	}
+
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+
+	return affected == 1, nil
 }

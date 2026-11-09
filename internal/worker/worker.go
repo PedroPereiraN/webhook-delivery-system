@@ -15,6 +15,7 @@ import (
 	"math/rand/v2"
 	"net/http"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -26,7 +27,7 @@ type OutboxRepository interface {
 	ClaimPending(limit int, lease time.Duration) ([]*domain.Outbox, error)
 	MarkDelivered(id uuid.UUID, attempt int) error
 	ScheduleRetry(id uuid.UUID, attempt int, delay time.Duration) error
-	MarkFailed(id uuid.UUID, attempt int) error
+	MarkFailed(id uuid.UUID, attempt int, reason string) error
 }
 
 type Config struct {
@@ -107,8 +108,9 @@ func (worker *Worker) handle(event *domain.Outbox) {
 	// means that previous attempts failed midway (e.g., due to a worker crash),
 	// so give up without trying again.
 	if event.Attempts > worker.config.MaxAttempts {
-		log.Printf("[failed] event=%s attempts=%d exceeded max without a result", event.ID, event.Attempts)
-		worker.updateStatus(event, worker.repository.MarkFailed(event.ID, event.Attempts))
+		reason := fmt.Sprintf("exceeded %d attempts without a result", worker.config.MaxAttempts)
+		log.Printf("[failed] event=%s attempts=%d: %s", event.ID, event.Attempts, reason)
+		worker.updateStatus(event, worker.repository.MarkFailed(event.ID, event.Attempts, reason))
 		return
 	}
 
@@ -121,7 +123,7 @@ func (worker *Worker) handle(event *domain.Outbox) {
 
 	if !isRetryable(err) || event.Attempts >= worker.config.MaxAttempts {
 		log.Printf("[failed] event=%s attempt=%d: %v", event.ID, event.Attempts, err)
-		worker.updateStatus(event, worker.repository.MarkFailed(event.ID, event.Attempts))
+		worker.updateStatus(event, worker.repository.MarkFailed(event.ID, event.Attempts, err.Error()))
 		return
 	}
 
@@ -140,12 +142,19 @@ func (worker *Worker) updateStatus(event *domain.Outbox, err error) {
 
 type deliveryError struct {
 	statusCode int
-	err        error
+	// Start of the response body, so the dead letter says why the receiver
+	// refused it (e.g. "signature mismatch") and not only the status code.
+	body string
+	err  error
 }
 
 func (e *deliveryError) Error() string {
 	if e.err != nil {
 		return e.err.Error()
+	}
+
+	if e.body != "" {
+		return fmt.Sprintf("webhook responded %d: %s", e.statusCode, e.body)
 	}
 
 	return fmt.Sprintf("webhook responded %d", e.statusCode)
@@ -195,12 +204,19 @@ func (worker *Worker) deliver(event *domain.Outbox) error {
 		return &deliveryError{err: err}
 	}
 	defer response.Body.Close()
-	// Reads the body to the end so that the connection can be reused.
-	io.Copy(io.Discard, io.LimitReader(response.Body, 64<<10))
 
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		return &deliveryError{statusCode: response.StatusCode}
+		snippet, _ := io.ReadAll(io.LimitReader(response.Body, 200))
+		io.Copy(io.Discard, io.LimitReader(response.Body, 64<<10))
+
+		return &deliveryError{
+			statusCode: response.StatusCode,
+			body:       strings.TrimSpace(string(snippet)),
+		}
 	}
+
+	// Reads the body to the end so that the connection can be reused.
+	io.Copy(io.Discard, io.LimitReader(response.Body, 64<<10))
 
 	return nil
 }

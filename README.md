@@ -25,6 +25,8 @@ client ──► api ──(one transaction)──► postgres: tickets + outbox
   as `failed`.
 - **At-least-once delivery:** a webhook can arrive more than once (for example
   after a timeout), so the receiver deduplicates by `event_id`.
+- **Dead letters:** events that give up keep the reason of the failure and can
+  be replayed through the API once the cause is fixed.
 - **HMAC signatures:** every request is signed so the receiver can check it came
   from us, was not modified, and is not a replayed old request.
 
@@ -168,6 +170,43 @@ WHERE status IN ('pending', 'processing') AND next_retry_at < NOW() - INTERVAL '
 
 An event goes through `pending → processing → delivered`, going back to
 `pending` on each retry, or ending in `failed`.
+
+## Dead letters
+
+Events that end in `failed` are the dead letter queue: no worker picks them up
+again, and they keep the reason of the last failure.
+
+List them, most recent first (`limit` defaults to 100, max 500):
+
+```bash
+curl 'localhost:8080/dead-letters?limit=20'
+```
+
+```json
+[{
+  "id": "7e9377e0-...",
+  "email": "ana@example.com",
+  "eventType": "ticket.created",
+  "attempts": 1,
+  "lastError": "webhook responded 401: signature mismatch",
+  "failedAt": "2026-11-09T04:02:21Z",
+  "createdAt": "2026-11-09T04:02:21Z",
+  "payload": {"event_id": "7e9377e0-...", "...": "..."}
+}]
+```
+
+After fixing the cause, send an event back to the workers:
+
+```bash
+curl -X POST localhost:8080/dead-letters/<id>/replay
+```
+
+The event returns to `pending` with its attempts reset, so it gets the full
+retry budget again. It keeps the same `event_id`, so if the receiver had
+already processed it, it deduplicates instead of sending a second email.
+Replaying without fixing the cause fails again: check `lastError` first (a
+`401: signature mismatch` means the secrets differ, a `400` means the payload
+itself is rejected). Replaying an event that is not `failed` returns 404.
 
 ## Load test
 
