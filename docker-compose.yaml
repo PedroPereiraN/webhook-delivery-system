@@ -29,7 +29,7 @@ services:
     deploy:
       replicas: 3
 
-  # Serviço externo de email simulado, destino dos webhooks do worker.
+  # Simulated external email service, the destination of the worker's webhooks.
   email-mock:
     build:
       context: .
@@ -66,6 +66,10 @@ services:
     image: dpage/pgadmin4
     ports:
       - "5050:80"
+    environment:
+      # Read from .env; the defaults apply when the variable is not set.
+      PGADMIN_DEFAULT_EMAIL: ${PGADMIN_DEFAULT_EMAIL:-admin@email.com}
+      PGADMIN_DEFAULT_PASSWORD: ${PGADMIN_DEFAULT_PASSWORD:-admin@123}
     networks:
       - webhook-delivery-system-network
 

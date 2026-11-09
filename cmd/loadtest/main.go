@@ -1,6 +1,6 @@
-// Teste de carga simples: vários usuários com emails falsos reservando e
-// devolvendo tickets ao mesmo tempo. No fim espera o worker esvaziar o outbox
-// e confere se cada evento virou exatamente um email no mock.
+// Simple load test: many users with fake emails reserving and returning
+// tickets at the same time. At the end it waits for the workers to drain the
+// outbox and checks that every event became exactly one email in the mock.
 //
 //	go run ./cmd/loadtest -users 30 -iterations 10
 package main
@@ -58,26 +58,26 @@ func (s *stats) observe(d time.Duration) {
 func main() {
 	var opts options
 
-	flag.StringVar(&opts.apiURL, "api", "http://localhost:8080", "URL da api")
-	flag.StringVar(&opts.mockURL, "mock", "http://localhost:8081", "URL do email-mock")
-	flag.StringVar(&opts.dbURL, "db", "postgres://postgres:postgres@localhost:5432/db?sslmode=disable", "Postgres, usado na verificação")
-	flag.IntVar(&opts.users, "users", 20, "usuários simultâneos")
-	flag.IntVar(&opts.iterations, "iterations", 10, "reservas por usuário")
-	flag.IntVar(&opts.maxQty, "max-qty", 3, "máximo de tickets por reserva")
-	flag.Float64Var(&opts.returnRate, "return-rate", 0.5, "chance de devolver os tickets de uma reserva")
-	flag.BoolVar(&opts.verify, "verify", true, "esperar o worker e conferir outbox x mock")
-	flag.DurationVar(&opts.waitFor, "wait", 10*time.Minute, "tempo máximo esperando o worker")
+	flag.StringVar(&opts.apiURL, "api", "http://localhost:8080", "api URL")
+	flag.StringVar(&opts.mockURL, "mock", "http://localhost:8081", "email-mock URL")
+	flag.StringVar(&opts.dbURL, "db", "postgres://postgres:postgres@localhost:5432/db?sslmode=disable", "Postgres, used by the verification")
+	flag.IntVar(&opts.users, "users", 20, "concurrent users")
+	flag.IntVar(&opts.iterations, "iterations", 10, "reservations per user")
+	flag.IntVar(&opts.maxQty, "max-qty", 3, "max tickets per reservation")
+	flag.Float64Var(&opts.returnRate, "return-rate", 0.5, "chance of returning tickets from a reservation")
+	flag.BoolVar(&opts.verify, "verify", true, "wait for the workers and compare outbox with mock")
+	flag.DurationVar(&opts.waitFor, "wait", 10*time.Minute, "max time to wait for the workers")
 	flag.Parse()
 
-	// Domínio único por execução: a verificação só olha os eventos deste
-	// teste, mesmo com dados de execuções anteriores no banco e no mock.
+	// Unique domain per run: the verification only looks at this run's
+	// events, even with data from previous runs in the database and the mock.
 	runID := fmt.Sprintf("run%d", time.Now().Unix())
 	domain := runID + ".example.com"
 
 	client := &http.Client{Timeout: 30 * time.Second}
 	st := &stats{}
 
-	log.Printf("%d usuários x %d reservas, emails @%s", opts.users, opts.iterations, domain)
+	log.Printf("%d users x %d reservations, emails @%s", opts.users, opts.iterations, domain)
 
 	started := time.Now()
 
@@ -102,18 +102,18 @@ func main() {
 	elapsed := time.Since(started)
 
 	fmt.Println()
-	fmt.Printf("Carga (%s)\n", elapsed.Round(time.Millisecond))
-	fmt.Printf("  reservas ok:        %d (%d tickets)\n", st.reserved.Load(), st.ticketsTotal.Load())
-	fmt.Printf("  devoluções ok:      %d\n", st.returned.Load())
-	fmt.Printf("  erros:              %d\n", st.failed.Load())
+	fmt.Printf("Load (%s)\n", elapsed.Round(time.Millisecond))
+	fmt.Printf("  reservations ok:   %d (%d tickets)\n", st.reserved.Load(), st.ticketsTotal.Load())
+	fmt.Printf("  returns ok:        %d\n", st.returned.Load())
+	fmt.Printf("  errors:            %d\n", st.failed.Load())
 	printLatencies(st.latencies)
 
 	if !opts.verify {
 		return
 	}
 
-	// Cada reserva e cada devolução ok gera exatamente um evento: a
-	// devolução é sempre de tickets de um único email.
+	// Each successful reservation and return produces exactly one event: a
+	// return always holds tickets from a single email.
 	expected := int(st.reserved.Load() + st.returned.Load())
 
 	if !verify(opts, domain, expected) {
@@ -134,11 +134,11 @@ func runIteration(client *http.Client, opts options, email string, st *stats) {
 	switch {
 	case err != nil:
 		st.failed.Add(1)
-		log.Printf("reserva falhou: %v", err)
+		log.Printf("reservation failed: %v", err)
 		return
 	case status != http.StatusOK:
 		st.failed.Add(1)
-		log.Printf("reserva respondeu %d", status)
+		log.Printf("reservation responded %d", status)
 		return
 	}
 
@@ -149,7 +149,7 @@ func runIteration(client *http.Client, opts options, email string, st *stats) {
 		return
 	}
 
-	// Devolve uma parte aleatória (pelo menos um) dos tickets da reserva.
+	// Return a random part (at least one) of the reservation's tickets.
 	rand.Shuffle(len(reserve.Tickets), func(i, j int) {
 		reserve.Tickets[i], reserve.Tickets[j] = reserve.Tickets[j], reserve.Tickets[i]
 	})
@@ -160,7 +160,7 @@ func runIteration(client *http.Client, opts options, email string, st *stats) {
 
 	if err != nil || status != http.StatusOK {
 		st.failed.Add(1)
-		log.Printf("devolução falhou: status=%d err=%v", status, err)
+		log.Printf("return failed: status=%d err=%v", status, err)
 		return
 	}
 
@@ -209,12 +209,12 @@ func printLatencies(latencies []time.Duration) {
 		return latencies[int(float64(len(latencies)-1)*p)].Round(time.Millisecond)
 	}
 
-	fmt.Printf("  latência:           p50=%s p95=%s max=%s (%d requests)\n",
+	fmt.Printf("  latency:           p50=%s p95=%s max=%s (%d requests)\n",
 		percentile(0.5), percentile(0.95), latencies[len(latencies)-1].Round(time.Millisecond), len(latencies))
 }
 
-// verify espera o outbox não ter mais eventos deste teste em aberto e compara
-// com o que o mock recebeu.
+// verify waits until the outbox has no open events from this run and compares
+// it with what the mock received.
 func verify(opts options, domain string, expected int) bool {
 	db, err := sql.Open("postgres", opts.dbURL)
 	if err != nil {
@@ -225,7 +225,7 @@ func verify(opts options, domain string, expected int) bool {
 	pattern := "%@" + domain
 
 	fmt.Println()
-	fmt.Printf("Esperando o worker entregar %d eventos", expected)
+	fmt.Printf("Waiting for the workers to deliver %d events", expected)
 
 	deadline := time.Now().Add(opts.waitFor)
 
@@ -245,7 +245,7 @@ func verify(opts options, domain string, expected int) bool {
 		}
 
 		if time.Now().After(deadline) {
-			fmt.Printf("\n  timeout: %d eventos ainda em aberto\n", open)
+			fmt.Printf("\n  timeout: %d events still open\n", open)
 			break
 		}
 
@@ -287,30 +287,30 @@ func verify(opts options, domain string, expected int) bool {
 		log.Fatal(err)
 	}
 
-	fmt.Println("Verificação")
-	fmt.Printf("  eventos no outbox:  %d (esperado %d)\n", total, expected)
-	fmt.Printf("  delivered:          %d\n", counts["delivered"])
-	fmt.Printf("  failed:             %d\n", counts["failed"])
-	fmt.Printf("  em aberto:          %d\n", counts["pending"]+counts["processing"])
-	fmt.Printf("  máx. tentativas:    %d\n", maxAttempts)
-	fmt.Printf("  emails no mock:     %d (%d recebidos mais de uma vez, após timeout)\n", emails, duplicated)
+	fmt.Println("Verification")
+	fmt.Printf("  outbox events:     %d (expected %d)\n", total, expected)
+	fmt.Printf("  delivered:         %d\n", counts["delivered"])
+	fmt.Printf("  failed:            %d\n", counts["failed"])
+	fmt.Printf("  still open:        %d\n", counts["pending"]+counts["processing"])
+	fmt.Printf("  max attempts:      %d\n", maxAttempts)
+	fmt.Printf("  emails in mock:    %d (%d received more than once, after a timeout)\n", emails, duplicated)
 
 	ok := true
 
 	check := func(cond bool, msg string) {
 		if !cond {
 			ok = false
-			fmt.Println("  FALHOU:", msg)
+			fmt.Println("  FAILED:", msg)
 		}
 	}
 
-	check(total == expected, "a quantidade de eventos no outbox não bate com as operações feitas")
-	check(counts["pending"]+counts["processing"] == 0, "sobraram eventos sem entregar")
-	// Falha de entrega também gera email no mock quando o mock "enviou" mas
-	// respondeu tarde demais; então emails pode passar de delivered só se
-	// houver failed.
-	check(emails >= counts["delivered"], "evento marcado como delivered sem email no mock (o mock reiniciou?)")
-	check(emails <= counts["delivered"]+counts["failed"], "o mock recebeu email de evento que não existe")
+	check(total == expected, "the number of outbox events does not match the operations performed")
+	check(counts["pending"]+counts["processing"] == 0, "some events were never delivered")
+	// A failed delivery can still leave an email in the mock when the mock
+	// "sent" it but answered too late, so emails may exceed delivered only by
+	// up to the number of failed events.
+	check(emails >= counts["delivered"], "event marked as delivered with no email in the mock (did the mock restart?)")
+	check(emails <= counts["delivered"]+counts["failed"], "the mock received an email for an event that does not exist")
 
 	if ok {
 		fmt.Println("  OK")
@@ -319,8 +319,8 @@ func verify(opts options, domain string, expected int) bool {
 	return ok
 }
 
-// mockEmails conta os emails únicos que o mock recebeu para este teste e
-// quantos deles chegaram mais de uma vez.
+// mockEmails counts the unique emails the mock received for this run and how
+// many of them arrived more than once.
 func mockEmails(mockURL, domain string) (int, int, error) {
 	response, err := http.Get(mockURL + "/emails")
 	if err != nil {

@@ -18,14 +18,14 @@ type Ticket struct {
 	DeletedAt  time.Time
 }
 
-// Stock não é guardado em tabela: é calculado a partir dos tickets.
-// Reserved são os tickets ativos e Returned os devolvidos (soft delete).
+// Stock is not stored in a table: it is computed from the tickets.
+// Reserved are the active tickets and Returned the returned ones (soft delete).
 type Stock struct {
 	Reserved int
 	Returned int
 }
 
-// TicketEventPayload é o corpo que o worker vai enviar para o webhook.
+// TicketEventPayload is the body the worker sends to the webhook.
 type TicketEventPayload struct {
 	EventID    uuid.UUID   `json:"event_id"`
 	EventType  EventType   `json:"event_type"`

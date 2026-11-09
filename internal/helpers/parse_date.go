@@ -7,12 +7,12 @@ import (
 )
 
 func ParseSqlDate(value any) (time.Time, error) {
-	// Layouts comuns que o PostgreSQL pode retornar
+	// Common layouts PostgreSQL may return
 	layouts := []string{
 		time.RFC3339,          // "2006-01-02T15:04:05Z07:00"
-		"2006-01-02 15:04:05", // formato sem timezone
-		"2006-01-02T15:04:05", // formato ISO sem timezone
-		"2006-01-02",          // apenas data
+		"2006-01-02 15:04:05", // without timezone
+		"2006-01-02T15:04:05", // ISO without timezone
+		"2006-01-02",          // date only
 	}
 
 	var str string
@@ -46,7 +46,7 @@ func ParseSqlDate(value any) (time.Time, error) {
 		return time.Time{}, nil
 	}
 
-	// Testa vários layouts conhecidos
+	// Try each known layout
 	for _, layout := range layouts {
 		if parsed, err := time.Parse(layout, str); err == nil {
 			return parsed, nil
