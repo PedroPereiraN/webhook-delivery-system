@@ -17,6 +17,8 @@ services:
       dockerfile: build/package/Dockerfile.worker
     environment:
       WEBHOOK_URL: http://email-mock:8081/webhook
+      # Dev only. Must match the email-mock's secret.
+      WEBHOOK_SECRET: dev-webhook-secret
     depends_on:
       postgres:
         condition: service_healthy
@@ -38,6 +40,7 @@ services:
       FAILURE_RATE: "0.3"
       SLOW_RATE: "0.1"
       SLOW_DELAY: "15s"
+      WEBHOOK_SECRET: dev-webhook-secret
     networks:
       - webhook-delivery-system-network
 

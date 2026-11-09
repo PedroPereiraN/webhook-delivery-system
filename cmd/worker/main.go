@@ -32,12 +32,18 @@ func main() {
 		webhookURL = "http://email-mock:8081/webhook"
 	}
 
+	webhookSecret := os.Getenv("WEBHOOK_SECRET")
+	if webhookSecret == "" {
+		log.Fatal("WEBHOOK_SECRET is required to sign the webhooks")
+	}
+
 	// The table is created by the API. If the worker starts up before that,
 	// ClaimPending fails, the error is logged, and it retries on the next poll.
 	oRepository := repository.NewOutboxRepository(db)
 
 	w := worker.New(oRepository, worker.Config{
 		WebhookURL:     webhookURL,
+		WebhookSecret:  webhookSecret,
 		PollInterval:   2 * time.Second,
 		BatchSize:      10,
 		RequestTimeout: 10 * time.Second,

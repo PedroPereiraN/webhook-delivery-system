@@ -6,6 +6,9 @@ package worker
 import (
 	"bytes"
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"io"
 	"log"
@@ -28,6 +31,9 @@ type OutboxRepository interface {
 
 type Config struct {
 	WebhookURL string
+	// Shared with the receiver, which uses it to check that the request came
+	// from us and that the body was not changed on the way.
+	WebhookSecret string
 	// Interval between searches when the last batch was not full.
 	PollInterval time.Duration
 	BatchSize    int
@@ -177,6 +183,13 @@ func (worker *Worker) deliver(event *domain.Outbox) error {
 	request.Header.Set("X-Event-Type", string(event.EventType))
 	request.Header.Set("X-Delivery-Attempt", strconv.Itoa(event.Attempts))
 
+	// Signed on every attempt, not stored in the outbox: the timestamp is part
+	// of the signature and has to be fresh, or the receiver rejects it as a
+	// replay.
+	timestamp := strconv.FormatInt(time.Now().Unix(), 10)
+	request.Header.Set("X-Webhook-Timestamp", timestamp)
+	request.Header.Set("X-Webhook-Signature", "sha256="+sign(worker.config.WebhookSecret, timestamp, event.Payload))
+
 	response, err := worker.client.Do(request)
 	if err != nil {
 		return &deliveryError{err: err}
@@ -190,6 +203,18 @@ func (worker *Worker) deliver(event *domain.Outbox) error {
 	}
 
 	return nil
+}
+
+// sign returns the hex HMAC-SHA256 of "<timestamp>.<body>". It signs the exact
+// bytes that go on the wire, so the receiver must verify the raw body before
+// parsing it; re-encoding the JSON could change field order or spacing.
+func sign(secret, timestamp string, body []byte) string {
+	mac := hmac.New(sha256.New, []byte(secret))
+	mac.Write([]byte(timestamp))
+	mac.Write([]byte("."))
+	mac.Write(body)
+
+	return hex.EncodeToString(mac.Sum(nil))
 }
 
 // Exponential backoff with jitter: BaseBackoff * 2^(attempt-1), capped at
