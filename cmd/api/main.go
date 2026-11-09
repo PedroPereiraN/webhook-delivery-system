@@ -7,6 +7,7 @@ import (
 	controller "github.com/PedroPereiraN/webhook-delivery-system/internal/api/adapter/input/controllers"
 	"github.com/PedroPereiraN/webhook-delivery-system/internal/api/adapter/output/repository"
 	service "github.com/PedroPereiraN/webhook-delivery-system/internal/api/services"
+	"github.com/PedroPereiraN/webhook-delivery-system/internal/config"
 	"github.com/gin-gonic/gin"
 	_ "github.com/lib/pq"
 )
@@ -14,7 +15,7 @@ import (
 func main() {
 	r := gin.Default()
 
-	db, err := sql.Open("postgres", "postgres://postgres:postgres@postgres:5432/db?sslmode=disable")
+	db, err := sql.Open("postgres", config.DatabaseURL())
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -22,38 +23,6 @@ func main() {
 	defer db.Close()
 
 	if err = db.Ping(); err != nil {
-		log.Fatal(err)
-	}
-
-	cRepository := repository.NewCustomerRepository(db)
-
-	err = cRepository.CreateTable()
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	cService := service.NewCustomerService(cRepository)
-	cController := controller.NewCustomerController(cService)
-
-	r.POST("/customers", cController.Create)
-	r.GET("/customers", cController.List)
-	r.PUT("/customers", cController.Update)
-	r.DELETE("/customers", cController.Delete)
-
-	sRepository := repository.NewStockRepository(db)
-
-	err = sRepository.CreateTable()
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	sService := service.NewStockService(sRepository)
-	sController := controller.NewStockController(sService)
-
-	r.PUT("/stock/update-quantity", sController.UpdateStockQuantity)
-
-	err = sRepository.CreateDefaultStock()
-	if err != nil {
 		log.Fatal(err)
 	}
 
@@ -71,13 +40,14 @@ func main() {
 		log.Fatal(err)
 	}
 
-	tService := service.NewTicketService(tRepository, sRepository, cRepository)
+	tService := service.NewTicketService(tRepository, config.TicketCapacity())
 
 	tController := controller.NewTicketController(tService)
 
 	r.POST("/tickets", tController.Create)
 	r.GET("/tickets", tController.List)
 	r.DELETE("/tickets", tController.Delete)
+	r.GET("/stock", tController.Stock)
 
 	r.Run()
 }

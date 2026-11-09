@@ -8,47 +8,53 @@ import (
 	"github.com/google/uuid"
 )
 
-var ErrTicketNotFound = errors.New("one or more tickets were not found")
+var (
+	ErrTicketNotFound    = errors.New("one or more tickets were not found")
+	ErrInsufficientStock = errors.New("not enough tickets available")
+)
 
 type Ticket struct {
 	ID         uuid.UUID
-	StockID    uuid.UUID
-	ReservedBy uuid.UUID
+	Email      string
 	ReservedAt time.Time
 	CreatedAt  time.Time
 	DeletedAt  time.Time
 }
 
-// ticketEventPayload é o corpo que o worker vai enviar para o webhook.
+// Stock não é guardado em tabela: é calculado a partir dos tickets.
+// Reserved são os tickets ativos e Returned os devolvidos (soft delete).
+type Stock struct {
+	Capacity  int
+	Reserved  int
+	Returned  int
+	Available int
+}
+
+// TicketEventPayload é o corpo que o worker vai enviar para o webhook.
 type TicketEventPayload struct {
-	EventID       uuid.UUID   `json:"event_id"`
-	EventType     EventType   `json:"event_type"`
-	CustomerID    uuid.UUID   `json:"customer_id"`
-	CustomerEmail string      `json:"customer_email"`
-	StockID       uuid.UUID   `json:"stock_id"`
-	Quantity      int         `json:"quantity"`
-	TicketIDs     []uuid.UUID `json:"ticket_ids"`
-	OccurredAt    time.Time   `json:"occurred_at"`
+	EventID    uuid.UUID   `json:"event_id"`
+	EventType  EventType   `json:"event_type"`
+	Email      string      `json:"email"`
+	Quantity   int         `json:"quantity"`
+	TicketIDs  []uuid.UUID `json:"ticket_ids"`
+	OccurredAt time.Time   `json:"occurred_at"`
 }
 
 func NewTicketEvent(
 	eventType EventType,
-	customer *Customer,
-	stockID uuid.UUID,
+	email string,
 	ticketIDs []uuid.UUID,
 	now time.Time,
 ) (*Outbox, error) {
 	eventID := uuid.New()
 
 	payload, err := json.Marshal(TicketEventPayload{
-		EventID:       eventID,
-		EventType:     eventType,
-		CustomerID:    customer.ID,
-		CustomerEmail: customer.Email,
-		StockID:       stockID,
-		Quantity:      len(ticketIDs),
-		TicketIDs:     ticketIDs,
-		OccurredAt:    now,
+		EventID:    eventID,
+		EventType:  eventType,
+		Email:      email,
+		Quantity:   len(ticketIDs),
+		TicketIDs:  ticketIDs,
+		OccurredAt: now,
 	})
 	if err != nil {
 		return nil, err
@@ -56,8 +62,7 @@ func NewTicketEvent(
 
 	return &Outbox{
 		ID:          eventID,
-		CustomerID:  customer.ID,
-		StockID:     stockID,
+		Email:       email,
 		Payload:     payload,
 		EventType:   eventType,
 		Status:      EventPending,

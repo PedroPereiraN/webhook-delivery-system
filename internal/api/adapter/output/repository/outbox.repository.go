@@ -17,22 +17,22 @@ func NewOutboxRepository(db *sql.DB) OutboxRepository {
 type OutboxRepository interface {
 	CreateTable() error
 	ClaimPending(limit int, lease time.Duration) ([]*domain.Outbox, error)
-	MarkDelivered(uuid.UUID) error
-	ScheduleRetry(uuid.UUID, time.Duration) error
-	MarkFailed(uuid.UUID) error
+	MarkDelivered(id uuid.UUID, attempt int) error
+	ScheduleRetry(id uuid.UUID, attempt int, delay time.Duration) error
+	MarkFailed(id uuid.UUID, attempt int) error
 }
 
 type outboxRepository struct {
 	db *sql.DB
 }
 
-// Sem foreign keys: o evento precisa sobreviver mesmo se o ticket/customer
-// for removido, senão o ON DELETE CASCADE apagaria eventos ainda não entregues.
+// Sem foreign keys: o evento precisa sobreviver mesmo se o ticket for
+// removido. O email fica numa coluna própria, além do payload, para dar para
+// consultar os eventos de um destinatário sem abrir o jsonb.
 func (repository *outboxRepository) CreateTable() error {
 	query := `CREATE TABLE IF NOT EXISTS outbox (
 		id uuid PRIMARY KEY,
-		customer_id uuid NOT NULL,
-		stock_id uuid NOT NULL,
+		email text NOT NULL,
 		event_type text NOT NULL,
 		payload jsonb NOT NULL,
 		status text NOT NULL DEFAULT 'pending',
@@ -65,8 +65,7 @@ func insertOutbox(tx *sql.Tx, event *domain.Outbox) error {
 	query := `
 		INSERT INTO outbox (
 			id,
-			customer_id,
-			stock_id,
+			email,
 			event_type,
 			payload,
 			status,
@@ -74,15 +73,14 @@ func insertOutbox(tx *sql.Tx, event *domain.Outbox) error {
 			created_at,
 			next_retry_at
 		) VALUES (
-			$1, $2, $3, $4, $5, $6, $7, $8, $9
+			$1, $2, $3, $4, $5, $6, $7, $8
 		)
 	`
 
 	_, err := tx.Exec(
 		query,
 		event.ID,
-		event.CustomerID,
-		event.StockID,
+		event.Email,
 		event.EventType,
 		// O lib/pq manda []byte como bytea, então o jsonb precisa ir como string.
 		string(event.Payload),
@@ -114,7 +112,7 @@ func (repository *outboxRepository) ClaimPending(limit int, lease time.Duration)
 			LIMIT $1
 			FOR UPDATE SKIP LOCKED
 		)
-		RETURNING id, customer_id, stock_id, event_type, payload, status, attempts, created_at, next_retry_at
+		RETURNING id, email, event_type, payload, status, attempts, created_at, next_retry_at
 	`
 
 	rows, err := repository.db.Query(query, limit, lease.Seconds())
@@ -131,8 +129,7 @@ func (repository *outboxRepository) ClaimPending(limit int, lease time.Duration)
 
 		err := rows.Scan(
 			&event.ID,
-			&event.CustomerID,
-			&event.StockID,
+			&event.Email,
 			&event.EventType,
 			&payload,
 			&event.Status,
@@ -155,33 +152,46 @@ func (repository *outboxRepository) ClaimPending(limit int, lease time.Duration)
 	return events, nil
 }
 
-func (repository *outboxRepository) MarkDelivered(id uuid.UUID) error {
-	query := `UPDATE outbox SET status = 'delivered' WHERE id = $1`
+// MarkDelivered, ScheduleRetry e MarkFailed só atualizam o evento se ele
+// ainda estiver em processing com o mesmo `attempt` que o worker pegou no
+// ClaimPending. Se o lease expirou e outro worker pegou o evento de novo, o
+// attempts já mudou e o update do worker atrasado não faz nada, em vez de
+// sobrescrever o resultado da tentativa mais nova.
+func (repository *outboxRepository) MarkDelivered(id uuid.UUID, attempt int) error {
+	query := `
+		UPDATE outbox
+		SET status = 'delivered'
+		WHERE id = $1 AND status = 'processing' AND attempts = $2
+	`
 
-	_, err := repository.db.Exec(query, id)
+	_, err := repository.db.Exec(query, id, attempt)
 
 	return err
 }
 
 // ScheduleRetry devolve o evento para pending, elegível de novo após `delay`.
-func (repository *outboxRepository) ScheduleRetry(id uuid.UUID, delay time.Duration) error {
+func (repository *outboxRepository) ScheduleRetry(id uuid.UUID, attempt int, delay time.Duration) error {
 	query := `
 		UPDATE outbox
 		SET
 			status = 'pending',
-			next_retry_at = NOW() + make_interval(secs => $2)
-		WHERE id = $1
+			next_retry_at = NOW() + make_interval(secs => $3)
+		WHERE id = $1 AND status = 'processing' AND attempts = $2
 	`
 
-	_, err := repository.db.Exec(query, id, delay.Seconds())
+	_, err := repository.db.Exec(query, id, attempt, delay.Seconds())
 
 	return err
 }
 
-func (repository *outboxRepository) MarkFailed(id uuid.UUID) error {
-	query := `UPDATE outbox SET status = 'failed' WHERE id = $1`
+func (repository *outboxRepository) MarkFailed(id uuid.UUID, attempt int) error {
+	query := `
+		UPDATE outbox
+		SET status = 'failed'
+		WHERE id = $1 AND status = 'processing' AND attempts = $2
+	`
 
-	_, err := repository.db.Exec(query, id)
+	_, err := repository.db.Exec(query, id, attempt)
 
 	return err
 }

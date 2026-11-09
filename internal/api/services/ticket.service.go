@@ -1,26 +1,19 @@
 package service
 
 import (
-	"database/sql"
-	"errors"
+	"strings"
 	"time"
 
 	"github.com/PedroPereiraN/webhook-delivery-system/internal/api/adapter/input/models"
 	"github.com/PedroPereiraN/webhook-delivery-system/internal/api/ports/output"
-	"github.com/PedroPereiraN/webhook-delivery-system/internal/config"
 	"github.com/PedroPereiraN/webhook-delivery-system/internal/domain"
 	"github.com/google/uuid"
 )
 
-func NewTicketService(
-	repository port.TicketRepository,
-	stockRepository port.StockRepository,
-	customerRepository port.CustomerRepository,
-) TicketService {
+func NewTicketService(repository port.TicketRepository, capacity int) TicketService {
 	return &ticketService{
-		repository:         repository,
-		stockRepository:    stockRepository,
-		customerRepository: customerRepository,
+		repository: repository,
+		capacity:   capacity,
 	}
 }
 
@@ -28,36 +21,18 @@ type TicketService interface {
 	Create(*model.CreateTicket) ([]uuid.UUID, error)
 	List(uuid.UUID) (*domain.Ticket, error)
 	DeleteMany([]uuid.UUID) ([]uuid.UUID, error)
+	Stock() (*domain.Stock, error)
 }
 
 type ticketService struct {
-	repository         port.TicketRepository
-	stockRepository    port.StockRepository
-	customerRepository port.CustomerRepository
+	repository port.TicketRepository
+	capacity   int
 }
 
 func (service *ticketService) Create(data *model.CreateTicket) ([]uuid.UUID, error) {
-	parsedStockID, err := uuid.Parse(config.DefaultStockID)
-	if err != nil {
-		return nil, err
-	}
-
-	customer, err := service.findCustomer(data.ReservedBy)
-	if err != nil {
-		return nil, err
-	}
-
-	stock, err := service.stockRepository.FindStockById(parsedStockID)
-	if errors.Is(err, sql.ErrNoRows) {
-		return nil, errors.New("stock not found")
-	}
-	if err != nil {
-		return nil, err
-	}
-
-	if data.Quantity > stock.FreeQuantity {
-		return nil, domain.ErrInsufficientStock
-	}
+	// Normaliza para que o mesmo email com outra caixa conte como o mesmo
+	// destinatário ao agrupar as devoluções.
+	email := strings.ToLower(strings.TrimSpace(data.Email))
 
 	now := time.Now()
 	tickets := make([]*domain.Ticket, 0, data.Quantity)
@@ -66,8 +41,7 @@ func (service *ticketService) Create(data *model.CreateTicket) ([]uuid.UUID, err
 	for range data.Quantity {
 		ticket := &domain.Ticket{
 			ID:         uuid.New(),
-			StockID:    parsedStockID,
-			ReservedBy: data.ReservedBy,
+			Email:      email,
 			ReservedAt: now,
 			CreatedAt:  now,
 		}
@@ -76,12 +50,12 @@ func (service *ticketService) Create(data *model.CreateTicket) ([]uuid.UUID, err
 		ticketIDs = append(ticketIDs, ticket.ID)
 	}
 
-	event, err := domain.NewTicketEvent(domain.EventCreated, customer, parsedStockID, ticketIDs, now)
+	event, err := domain.NewTicketEvent(domain.EventCreated, email, ticketIDs, now)
 	if err != nil {
 		return nil, err
 	}
 
-	result, err := service.repository.ReserveMany(parsedStockID, tickets, event)
+	result, err := service.repository.ReserveMany(service.capacity, tickets, event)
 	if err != nil {
 		return nil, err
 	}
@@ -98,8 +72,8 @@ func (service *ticketService) List(id uuid.UUID) (*domain.Ticket, error) {
 	return ticket, nil
 }
 
-// DeleteMany cancela todos os tickets ou nenhum. Gera um evento por
-// customer/stock, assim cada customer recebe um único email com os tickets dele.
+// DeleteMany cancela todos os tickets ou nenhum. Gera um evento por email,
+// assim cada destinatário recebe um único email com os tickets dele.
 func (service *ticketService) DeleteMany(ids []uuid.UUID) ([]uuid.UUID, error) {
 	ids = uniqueIDs(ids)
 
@@ -112,34 +86,22 @@ func (service *ticketService) DeleteMany(ids []uuid.UUID) ([]uuid.UUID, error) {
 		return nil, domain.ErrTicketNotFound
 	}
 
-	type groupKey struct {
-		customerID uuid.UUID
-		stockID    uuid.UUID
-	}
-
-	groups := map[groupKey][]uuid.UUID{}
-	order := []groupKey{}
+	groups := map[string][]uuid.UUID{}
+	order := []string{}
 
 	for _, ticket := range tickets {
-		key := groupKey{customerID: ticket.ReservedBy, stockID: ticket.StockID}
-
-		if _, ok := groups[key]; !ok {
-			order = append(order, key)
+		if _, ok := groups[ticket.Email]; !ok {
+			order = append(order, ticket.Email)
 		}
 
-		groups[key] = append(groups[key], ticket.ID)
+		groups[ticket.Email] = append(groups[ticket.Email], ticket.ID)
 	}
 
 	now := time.Now()
 	events := make([]*domain.Outbox, 0, len(order))
 
-	for _, key := range order {
-		customer, err := service.findCustomer(key.customerID)
-		if err != nil {
-			return nil, err
-		}
-
-		event, err := domain.NewTicketEvent(domain.EventDeleted, customer, key.stockID, groups[key], now)
+	for _, email := range order {
+		event, err := domain.NewTicketEvent(domain.EventDeleted, email, groups[email], now)
 		if err != nil {
 			return nil, err
 		}
@@ -154,16 +116,18 @@ func (service *ticketService) DeleteMany(ids []uuid.UUID) ([]uuid.UUID, error) {
 	return ids, nil
 }
 
-func (service *ticketService) findCustomer(id uuid.UUID) (*domain.Customer, error) {
-	customer, err := service.customerRepository.FindCustomerById(id)
-	if errors.Is(err, sql.ErrNoRows) {
-		return nil, domain.ErrCustomerNotFound
-	}
+func (service *ticketService) Stock() (*domain.Stock, error) {
+	reserved, returned, err := service.repository.CountTickets()
 	if err != nil {
 		return nil, err
 	}
 
-	return customer, nil
+	return &domain.Stock{
+		Capacity:  service.capacity,
+		Reserved:  reserved,
+		Returned:  returned,
+		Available: max(service.capacity-reserved, 0),
+	}, nil
 }
 
 // uniqueIDs remove IDs repetidos mantendo a ordem, senão a contagem de

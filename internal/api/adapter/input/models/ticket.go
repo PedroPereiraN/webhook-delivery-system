@@ -7,8 +7,8 @@ import (
 )
 
 type CreateTicket struct {
-	ReservedBy uuid.UUID `json:"reservedBy" binding:"required"`
-	Quantity   int32     `json:"quantity" binding:"required,gt=0"`
+	Email    string `json:"email" binding:"required,email"`
+	Quantity int32  `json:"quantity" binding:"required,gt=0"`
 }
 
 type DeleteTickets struct {
@@ -17,8 +17,15 @@ type DeleteTickets struct {
 
 type Ticket struct {
 	ID         uuid.UUID `json:"id"`
-	ReservedBy uuid.UUID `json:"reservedBy"`
+	Email      string    `json:"email"`
 	ReservedAt time.Time `json:"ReservedAt"`
 	CreatedAt  time.Time `json:"CreatedAt"`
 	DeletedAt  time.Time `json:"DeletedAt"`
+}
+
+type Stock struct {
+	Capacity  int `json:"capacity"`
+	Reserved  int `json:"reserved"`
+	Returned  int `json:"returned"`
+	Available int `json:"available"`
 }

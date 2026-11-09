@@ -3,10 +3,10 @@ services:
     build:
       context: .
       dockerfile: build/package/Dockerfile.api
-    volumes:
-      - .:/api
     ports:
       - "8080:8080"
+    environment:
+      TICKET_CAPACITY: "100"
     depends_on:
       postgres:
         condition: service_healthy
@@ -19,17 +19,33 @@ services:
     build:
       context: .
       dockerfile: build/package/Dockerfile.worker
-    volumes:
-      - .:/worker
+    environment:
+      WEBHOOK_URL: http://email-mock:8081/webhook
     depends_on:
       postgres:
         condition: service_healthy
       redis:
         condition: service_started
+      email-mock:
+        condition: service_started
     networks:
       - webhook-delivery-system-network
-    # deploy:
-    #   replicas: 3
+    deploy:
+      replicas: 3
+
+  # Serviço externo de email simulado, destino dos webhooks do worker.
+  email-mock:
+    build:
+      context: .
+      dockerfile: build/package/Dockerfile.email-mock
+    ports:
+      - "8081:8081"
+    environment:
+      FAILURE_RATE: "0.3"
+      SLOW_RATE: "0.1"
+      SLOW_DELAY: "15s"
+    networks:
+      - webhook-delivery-system-network
 
   postgres:
     image: postgres:17

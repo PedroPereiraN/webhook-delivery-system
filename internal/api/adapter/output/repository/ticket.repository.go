@@ -10,6 +10,10 @@ import (
 	"github.com/lib/pq"
 )
 
+// Chave do advisory lock que serializa as reservas. Qualquer número serve,
+// só precisa ser o mesmo em todas as transações de reserva.
+const reserveLockKey = 7_301_001
+
 func NewTicketRepository(db *sql.DB) TicketRepository {
 	return &ticketRepository{
 		db: db,
@@ -18,10 +22,11 @@ func NewTicketRepository(db *sql.DB) TicketRepository {
 
 type TicketRepository interface {
 	CreateTable() error
-	ReserveMany(uuid.UUID, []*domain.Ticket, *domain.Outbox) ([]uuid.UUID, error)
+	ReserveMany(capacity int, tickets []*domain.Ticket, event *domain.Outbox) ([]uuid.UUID, error)
 	FindTicketByID(uuid.UUID) (*domain.Ticket, error)
 	FindTicketsByIDs([]uuid.UUID) ([]*domain.Ticket, error)
 	DeleteMany([]uuid.UUID, []*domain.Outbox) error
+	CountTickets() (reserved int, returned int, err error)
 }
 
 type ticketRepository struct {
@@ -30,23 +35,24 @@ type ticketRepository struct {
 
 func (repository *ticketRepository) CreateTable() error {
 	query := `CREATE TABLE IF NOT EXISTS tickets (
-    id uuid UNIQUE PRIMARY KEY,
-		stock_id uuid NOT NULL,
-		CONSTRAINT foreign_key_stock
-			FOREIGN KEY (stock_id)
-      REFERENCES stocks (id)
-      ON DELETE CASCADE,
-		reserved_by uuid NOT NULL,
-		CONSTRAINT foreign_key_customer
-			FOREIGN KEY (reserved_by)
-      REFERENCES customers (id)
-      ON DELETE CASCADE,
-		reserved_at timestamp,
-    createdAt timestamp DEFAULT NOW(),
-    deletedAt timestamp
-  )`
+		id uuid PRIMARY KEY,
+		email text NOT NULL,
+		reserved_at timestamptz NOT NULL,
+		created_at timestamptz NOT NULL DEFAULT NOW(),
+		deleted_at timestamptz
+	)`
 
 	_, err := repository.db.Exec(query)
+	if err != nil {
+		return err
+	}
+
+	// O count de tickets ativos roda em toda reserva.
+	indexQuery := `CREATE INDEX IF NOT EXISTS idx_tickets_active
+		ON tickets (id)
+		WHERE deleted_at IS NULL`
+
+	_, err = repository.db.Exec(indexQuery)
 	if err != nil {
 		return err
 	}
@@ -54,51 +60,45 @@ func (repository *ticketRepository) CreateTable() error {
 	return nil
 }
 
-// ReserveMany reserva os tickets no stock, insere todos e grava o evento no
-// outbox numa única transação: ou tudo é criado e o stock é atualizado, ou nada acontece.
-func (repository *ticketRepository) ReserveMany(stockID uuid.UUID, tickets []*domain.Ticket, event *domain.Outbox) ([]uuid.UUID, error) {
+// ReserveMany confere se há tickets disponíveis, insere todos e grava o evento
+// no outbox numa única transação: ou tudo é criado, ou nada acontece.
+func (repository *ticketRepository) ReserveMany(capacity int, tickets []*domain.Ticket, event *domain.Outbox) ([]uuid.UUID, error) {
 	tx, err := repository.db.Begin()
 	if err != nil {
 		return nil, err
 	}
 	defer tx.Rollback()
 
+	// Sem uma linha de stock para travar com UPDATE, duas reservas
+	// concorrentes poderiam contar os mesmos tickets livres e passar da
+	// capacidade. O advisory lock faz uma reserva esperar a outra commitar;
+	// ele é liberado sozinho no fim da transação.
+	if _, err := tx.Exec(`SELECT pg_advisory_xact_lock($1)`, reserveLockKey); err != nil {
+		return nil, err
+	}
+
+	var reserved int
+
+	countQuery := `SELECT COUNT(*) FROM tickets WHERE deleted_at IS NULL`
+
+	if err := tx.QueryRow(countQuery).Scan(&reserved); err != nil {
+		return nil, err
+	}
+
 	quantity := len(tickets)
 
-	// O WHERE garante no banco que só reserva se houver quantidade livre,
-	// mesmo com duas requisições concorrentes.
-	stockQuery := `
-		UPDATE stocks
-		SET
-			free_quantity = free_quantity - $2,
-			reserved_quantity = reserved_quantity + $2
-		WHERE id = $1 AND free_quantity >= $2
-	`
-
-	result, err := tx.Exec(stockQuery, stockID, quantity)
-	if err != nil {
-		return nil, err
-	}
-
-	affected, err := result.RowsAffected()
-	if err != nil {
-		return nil, err
-	}
-
-	if affected == 0 {
+	if reserved+quantity > capacity {
 		return nil, domain.ErrInsufficientStock
 	}
 
 	ticketQuery := `
 		INSERT INTO tickets (
 			id,
-			stock_id,
-			reserved_by,
+			email,
 			reserved_at,
-			createdAt,
-			deletedAt
+			created_at
 		) VALUES (
-			$1, $2, $3, $4, $5, $6
+			$1, $2, $3, $4
 		)
 	`
 
@@ -113,11 +113,9 @@ func (repository *ticketRepository) ReserveMany(stockID uuid.UUID, tickets []*do
 	for _, ticket := range tickets {
 		_, err := stmt.Exec(
 			ticket.ID,
-			stockID,
-			ticket.ReservedBy,
+			ticket.Email,
 			ticket.ReservedAt,
 			ticket.CreatedAt,
-			nil,
 		)
 		if err != nil {
 			return nil, err
@@ -139,37 +137,31 @@ func (repository *ticketRepository) ReserveMany(stockID uuid.UUID, tickets []*do
 
 func (repository *ticketRepository) FindTicketByID(id uuid.UUID) (*domain.Ticket, error) {
 	tDomain := domain.Ticket{}
-	var createdAt sql.NullString
-	var reservedAt sql.NullString
-	var deletedAt sql.NullString
+	var reservedAt sql.NullTime
+	var createdAt sql.NullTime
+	var deletedAt sql.NullTime
 
-	query := `SELECT id, stock_id, reserved_by, reserved_at, createdAt, deletedAt FROM tickets WHERE id = $1 AND deletedAt IS NULL`
+	query := `SELECT id, email, reserved_at, created_at, deleted_at FROM tickets WHERE id = $1 AND deleted_at IS NULL`
 
-	err := repository.db.QueryRow(query, id).Scan(&tDomain.ID, &tDomain.StockID, &tDomain.ReservedBy, &reservedAt, &createdAt, &deletedAt)
+	err := repository.db.QueryRow(query, id).Scan(&tDomain.ID, &tDomain.Email, &reservedAt, &createdAt, &deletedAt)
 	if err != nil {
 		return &domain.Ticket{}, err
 	}
 
-	parsedReservedAt, err := helpers.ParseSqlDate(reservedAt)
+	tDomain.ReservedAt, err = helpers.ParseSqlDate(reservedAt)
 	if err != nil {
 		return &domain.Ticket{}, err
 	}
 
-	tDomain.ReservedAt = parsedReservedAt
-
-	parsedCreatedAt, err := helpers.ParseSqlDate(createdAt)
+	tDomain.CreatedAt, err = helpers.ParseSqlDate(createdAt)
 	if err != nil {
 		return &domain.Ticket{}, err
 	}
 
-	tDomain.CreatedAt = parsedCreatedAt
-
-	parsedDeletedAt, err := helpers.ParseSqlDate(deletedAt)
+	tDomain.DeletedAt, err = helpers.ParseSqlDate(deletedAt)
 	if err != nil {
 		return &domain.Ticket{}, err
 	}
-
-	tDomain.DeletedAt = parsedDeletedAt
 
 	return &tDomain, nil
 }
@@ -178,9 +170,9 @@ func (repository *ticketRepository) FindTicketByID(id uuid.UUID) (*domain.Ticket
 // IDs inexistentes ou já deletados simplesmente não aparecem no resultado.
 func (repository *ticketRepository) FindTicketsByIDs(ids []uuid.UUID) ([]*domain.Ticket, error) {
 	query := `
-		SELECT id, stock_id, reserved_by, reserved_at, createdAt
+		SELECT id, email, reserved_at, created_at
 		FROM tickets
-		WHERE id = ANY($1) AND deletedAt IS NULL
+		WHERE id = ANY($1) AND deleted_at IS NULL
 	`
 
 	rows, err := repository.db.Query(query, pq.Array(helpers.UuidsToStrings(ids)))
@@ -193,10 +185,10 @@ func (repository *ticketRepository) FindTicketsByIDs(ids []uuid.UUID) ([]*domain
 
 	for rows.Next() {
 		var ticket domain.Ticket
-		var reservedAt sql.NullString
-		var createdAt sql.NullString
+		var reservedAt sql.NullTime
+		var createdAt sql.NullTime
 
-		err := rows.Scan(&ticket.ID, &ticket.StockID, &ticket.ReservedBy, &reservedAt, &createdAt)
+		err := rows.Scan(&ticket.ID, &ticket.Email, &reservedAt, &createdAt)
 		if err != nil {
 			return nil, err
 		}
@@ -221,9 +213,9 @@ func (repository *ticketRepository) FindTicketsByIDs(ids []uuid.UUID) ([]*domain
 	return tickets, nil
 }
 
-// DeleteMany faz o soft delete dos tickets, devolve as unidades reservadas para
-// o stock e grava os eventos no outbox na mesma transação. Se algum ticket não
-// puder ser deletado, nada é deletado.
+// DeleteMany faz o soft delete dos tickets e grava os eventos no outbox na
+// mesma transação. Se algum ticket não puder ser deletado, nada é deletado.
+// Não precisa do advisory lock: devolver só aumenta o disponível.
 func (repository *ticketRepository) DeleteMany(ids []uuid.UUID, events []*domain.Outbox) error {
 	tx, err := repository.db.Begin()
 	if err != nil {
@@ -231,59 +223,28 @@ func (repository *ticketRepository) DeleteMany(ids []uuid.UUID, events []*domain
 	}
 	defer tx.Rollback()
 
-	// O "deletedAt IS NULL" impede que deletar o mesmo ticket duas vezes
-	// libere a unidade duas vezes.
+	// O "deleted_at IS NULL" impede que devolver o mesmo ticket duas vezes
+	// gere dois eventos.
 	ticketQuery := `
 		UPDATE tickets
-		SET deletedAt = $2
-		WHERE id = ANY($1) AND deletedAt IS NULL
-		RETURNING stock_id
+		SET deleted_at = $2
+		WHERE id = ANY($1) AND deleted_at IS NULL
 	`
 
-	rows, err := tx.Query(ticketQuery, pq.Array(helpers.UuidsToStrings(ids)), time.Now())
+	result, err := tx.Exec(ticketQuery, pq.Array(helpers.UuidsToStrings(ids)), time.Now())
 	if err != nil {
 		return err
 	}
 
-	releasedByStock := map[uuid.UUID]int{}
-	deleted := 0
-
-	for rows.Next() {
-		var stockID uuid.UUID
-
-		if err := rows.Scan(&stockID); err != nil {
-			rows.Close()
-			return err
-		}
-
-		releasedByStock[stockID]++
-		deleted++
-	}
-
-	rows.Close()
-
-	if err := rows.Err(); err != nil {
+	deleted, err := result.RowsAffected()
+	if err != nil {
 		return err
 	}
 
 	// Outra requisição pode ter deletado algum ticket entre a validação no
 	// service e aqui; nesse caso desfaz tudo.
-	if deleted != len(ids) {
+	if int(deleted) != len(ids) {
 		return domain.ErrTicketNotFound
-	}
-
-	stockQuery := `
-		UPDATE stocks
-		SET
-			reserved_quantity = reserved_quantity - $2,
-			free_quantity = free_quantity + $2
-		WHERE id = $1
-	`
-
-	for stockID, quantity := range releasedByStock {
-		if _, err := tx.Exec(stockQuery, stockID, quantity); err != nil {
-			return err
-		}
 	}
 
 	for _, event := range events {
@@ -293,4 +254,23 @@ func (repository *ticketRepository) DeleteMany(ids []uuid.UUID, events []*domain
 	}
 
 	return tx.Commit()
+}
+
+// CountTickets devolve quantos tickets estão reservados (ativos) e quantos
+// foram devolvidos.
+func (repository *ticketRepository) CountTickets() (int, int, error) {
+	query := `
+		SELECT
+			COUNT(*) FILTER (WHERE deleted_at IS NULL),
+			COUNT(*) FILTER (WHERE deleted_at IS NOT NULL)
+		FROM tickets
+	`
+
+	var reserved, returned int
+
+	if err := repository.db.QueryRow(query).Scan(&reserved, &returned); err != nil {
+		return 0, 0, err
+	}
+
+	return reserved, returned, nil
 }

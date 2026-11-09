@@ -1,0 +1,18 @@
+FROM golang:1.27.1-bookworm AS build
+
+WORKDIR /src
+
+COPY go.* ./
+RUN go mod download
+
+COPY . .
+
+RUN CGO_ENABLED=0 go build -buildvcs=false -o /out/email-mock ./cmd/email-mock
+
+FROM gcr.io/distroless/static-debian12
+
+EXPOSE 8081
+
+COPY --from=build /out/email-mock /email-mock
+
+ENTRYPOINT ["/email-mock"]

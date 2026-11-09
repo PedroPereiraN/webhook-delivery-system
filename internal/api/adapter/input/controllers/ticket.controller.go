@@ -23,6 +23,7 @@ type TicketController interface {
 	Create(*gin.Context)
 	List(*gin.Context)
 	Delete(*gin.Context)
+	Stock(*gin.Context)
 }
 
 type ticketController struct {
@@ -44,11 +45,6 @@ func (controller *ticketController) Create(c *gin.Context) {
 	}
 
 	result, err := controller.service.Create(&ticketData)
-	if errors.Is(err, domain.ErrCustomerNotFound) {
-		c.JSON(http.StatusNotFound, err.Error())
-
-		return
-	}
 	if errors.Is(err, domain.ErrInsufficientStock) {
 		c.JSON(http.StatusConflict, err.Error())
 
@@ -70,7 +66,7 @@ func (controller *ticketController) List(c *gin.Context) {
 	paramsID := c.Query("id")
 
 	if paramsID == "" {
-		c.JSON(http.StatusBadRequest, "Unspecified customer")
+		c.JSON(http.StatusBadRequest, "Unspecified ticket")
 		return
 	}
 
@@ -88,7 +84,7 @@ func (controller *ticketController) List(c *gin.Context) {
 
 	result := model.Ticket{
 		ID:         data.ID,
-		ReservedBy: data.ReservedBy,
+		Email:      data.Email,
 		ReservedAt: data.ReservedAt,
 		CreatedAt:  data.CreatedAt,
 		DeletedAt:  data.DeletedAt,
@@ -112,7 +108,7 @@ func (controller *ticketController) Delete(c *gin.Context) {
 	}
 
 	result, err := controller.service.DeleteMany(data.IDs)
-	if errors.Is(err, domain.ErrTicketNotFound) || errors.Is(err, domain.ErrCustomerNotFound) {
+	if errors.Is(err, domain.ErrTicketNotFound) {
 		c.JSON(http.StatusNotFound, err.Error())
 
 		return
@@ -126,5 +122,20 @@ func (controller *ticketController) Delete(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{
 		"message": "Tickets deleted successfully",
 		"tickets": result,
+	})
+}
+
+func (controller *ticketController) Stock(c *gin.Context) {
+	data, err := controller.service.Stock()
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	c.JSON(http.StatusOK, model.Stock{
+		Capacity:  data.Capacity,
+		Reserved:  data.Reserved,
+		Returned:  data.Returned,
+		Available: data.Available,
 	})
 }

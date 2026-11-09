@@ -1,12 +1,16 @@
-FROM golang:1.27.1-bookworm
+FROM golang:1.27.1-bookworm AS build
 
-WORKDIR /worker
-
-RUN go install github.com/air-verse/air@latest
+WORKDIR /src
 
 COPY go.* ./
 RUN go mod download
 
 COPY . .
 
-CMD ["sh", "-c", "air -c .air.worker.toml"]
+RUN CGO_ENABLED=0 go build -buildvcs=false -o /out/worker ./cmd/worker
+
+FROM gcr.io/distroless/static-debian12
+
+COPY --from=build /out/worker /worker
+
+ENTRYPOINT ["/worker"]

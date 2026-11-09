@@ -1,19 +1,58 @@
 package main
 
 import (
+	"context"
+	"database/sql"
 	"log"
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
+
+	"github.com/PedroPereiraN/webhook-delivery-system/internal/api/adapter/output/repository"
+	"github.com/PedroPereiraN/webhook-delivery-system/internal/config"
+	"github.com/PedroPereiraN/webhook-delivery-system/internal/worker"
+	_ "github.com/lib/pq"
 )
 
 func main() {
-	log.Println("worker started")
+	db, err := sql.Open("postgres", config.DatabaseURL())
+	if err != nil {
+		log.Fatal(err)
+	}
 
-	// TODO: ler a tabela de outbox e entregar os webhooks.
-	stop := make(chan os.Signal, 1)
-	signal.Notify(stop, syscall.SIGINT, syscall.SIGTERM)
-	<-stop
+	defer db.Close()
+
+	if err = db.Ping(); err != nil {
+		log.Fatal(err)
+	}
+
+	webhookURL := os.Getenv("WEBHOOK_URL")
+	if webhookURL == "" {
+		webhookURL = "http://email-mock:8081/webhook"
+	}
+
+	// A tabela é criada pela api. Se o worker subir antes, o ClaimPending
+	// falha, o erro é logado e ele tenta de novo no próximo poll.
+	oRepository := repository.NewOutboxRepository(db)
+
+	w := worker.New(oRepository, worker.Config{
+		WebhookURL:     webhookURL,
+		PollInterval:   2 * time.Second,
+		BatchSize:      10,
+		RequestTimeout: 10 * time.Second,
+		Lease:          30 * time.Second,
+		MaxAttempts:    8,
+		BaseBackoff:    2 * time.Second,
+		MaxBackoff:     5 * time.Minute,
+	})
+
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+
+	log.Printf("worker started, delivering to %s", webhookURL)
+
+	w.Run(ctx)
 
 	log.Println("worker stopped")
 }

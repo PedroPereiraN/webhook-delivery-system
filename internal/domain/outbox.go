@@ -12,8 +12,7 @@ import (
 
 type Outbox struct {
 	ID          uuid.UUID
-	CustomerID  uuid.UUID
-	StockID     uuid.UUID
+	Email       string
 	Payload     json.RawMessage
 	EventType   EventType
 	Status      EventStatus
