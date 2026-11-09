@@ -1,6 +1,6 @@
-// Worker do transactional outbox: lê os eventos pendentes da tabela outbox e
-// entrega cada um como webhook. A entrega é at-least-once, então o destino
-// precisa ser idempotente pelo event_id.
+// Transactional outbox worker: reads pending events from the outbox table and
+// delivers each one as a webhook. Delivery is at-least-once, so the destination
+// must be idempotent based on the event_id.
 package worker
 
 import (
@@ -28,11 +28,11 @@ type OutboxRepository interface {
 
 type Config struct {
 	WebhookURL string
-	// Intervalo entre buscas quando o último lote não veio cheio.
+	// Interval between searches when the last batch was not full.
 	PollInterval time.Duration
 	BatchSize    int
-	// Timeout de cada POST. Precisa ser bem menor que o Lease, senão o
-	// evento volta a ser elegível enquanto ainda está sendo entregue.
+	// Timeout for each POST. It must be significantly shorter than the lease duration
+	// otherwise, the event could become eligible again while it is still being delivered.
 	RequestTimeout time.Duration
 	Lease          time.Duration
 	MaxAttempts    int
@@ -54,8 +54,6 @@ func New(repository OutboxRepository, config Config) *Worker {
 	}
 }
 
-// Run busca e entrega eventos até o ctx ser cancelado. Ao parar, termina de
-// entregar o lote atual em vez de abandonar eventos no meio.
 func (worker *Worker) Run(ctx context.Context) {
 	for {
 		claimed, err := worker.processBatch()
@@ -63,8 +61,6 @@ func (worker *Worker) Run(ctx context.Context) {
 			log.Printf("claim failed: %v", err)
 		}
 
-		// Lote cheio: provavelmente tem mais eventos esperando, busca de novo
-		// sem dormir.
 		if err == nil && claimed == worker.config.BatchSize {
 			if ctx.Err() != nil {
 				return
@@ -101,9 +97,9 @@ func (worker *Worker) processBatch() (int, error) {
 }
 
 func (worker *Worker) handle(event *domain.Outbox) {
-	// Attempts já foi incrementado no ClaimPending. Passar do limite aqui
-	// significa que tentativas anteriores morreram no meio (crash do worker),
-	// então desiste sem tentar de novo.
+	// 'Attempts' has already been incremented in ClaimPending. Exceeding the limit here
+	// means that previous attempts failed midway (e.g., due to a worker crash),
+	// so give up without trying again.
 	if event.Attempts > worker.config.MaxAttempts {
 		log.Printf("[failed] event=%s attempts=%d exceeded max without a result", event.ID, event.Attempts)
 		worker.updateStatus(event, worker.repository.MarkFailed(event.ID, event.Attempts))
@@ -128,8 +124,8 @@ func (worker *Worker) handle(event *domain.Outbox) {
 	worker.updateStatus(event, worker.repository.ScheduleRetry(event.ID, event.Attempts, delay))
 }
 
-// updateStatus só loga: se o update falhar o evento continua em processing e
-// volta a ser elegível quando o lease expirar.
+// updateStatus only logs: if the update fails, the event remains in 'processing'
+// and becomes eligible again once the lease expires.
 func (worker *Worker) updateStatus(event *domain.Outbox, err error) {
 	if err != nil {
 		log.Printf("could not update event=%s: %v", event.ID, err)
@@ -149,8 +145,9 @@ func (e *deliveryError) Error() string {
 	return fmt.Sprintf("webhook responded %d", e.statusCode)
 }
 
-// isRetryable: erro de rede, timeout e 5xx podem passar numa próxima
-// tentativa. 4xx é problema no próprio evento, exceto 408 e 429.
+// isRetryable: network errors, timeouts, and 5xx status codes may succeed on a
+// subsequent attempt. 4xx errors indicate an issue with the event itself,
+// with the exception of 408 and 429.
 func isRetryable(err error) bool {
 	deliveryErr, ok := err.(*deliveryError)
 	if !ok || deliveryErr.statusCode == 0 {
@@ -163,8 +160,8 @@ func isRetryable(err error) bool {
 }
 
 func (worker *Worker) deliver(event *domain.Outbox) error {
-	// Não usa o ctx do Run: no shutdown a entrega em andamento termina (ou
-	// estoura o RequestTimeout) em vez de ser cortada no meio.
+	// Do not use the ctx from Run: during shutdown, an ongoing delivery is allowed to finish
+	// (or hit the RequestTimeout) rather than being cut off mid-process.
 	request, err := http.NewRequestWithContext(
 		context.Background(),
 		http.MethodPost,
@@ -185,8 +182,7 @@ func (worker *Worker) deliver(event *domain.Outbox) error {
 		return &deliveryError{err: err}
 	}
 	defer response.Body.Close()
-
-	// Lê o corpo até o fim para a conexão poder ser reaproveitada.
+	// Reads the body to the end so that the connection can be reused.
 	io.Copy(io.Discard, io.LimitReader(response.Body, 64<<10))
 
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
@@ -196,9 +192,10 @@ func (worker *Worker) deliver(event *domain.Outbox) error {
 	return nil
 }
 
-// backoff exponencial com jitter: BaseBackoff * 2^(attempt-1), limitado a
-// MaxBackoff, e sorteia entre metade e o valor cheio. O jitter evita que
-// vários eventos que falharam juntos tentem de novo todos no mesmo instante.
+// Exponential backoff with jitter: BaseBackoff * 2^(attempt-1), capped at
+// MaxBackoff, with a randomized value chosen between half and the full amount.
+// Jitter prevents multiple events that failed simultaneously from all retrying
+// at the exact same instant.
 func (worker *Worker) backoff(attempt int) time.Duration {
 	limit := worker.config.MaxBackoff
 

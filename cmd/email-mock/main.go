@@ -1,9 +1,3 @@
-// Mock de um serviço externo de email. Recebe os webhooks do worker e finge
-// que envia um email para o email do ticket. Ele falha e atrasa de propósito para
-// exercitar o retry, o backoff e o timeout do worker.
-//
-// De propósito não importa nada de internal/: simula um serviço de terceiro,
-// que só conhece o contrato JSON do webhook.
 package main
 
 import (
@@ -31,8 +25,8 @@ type sentEmail struct {
 	Subject    string      `json:"subject"`
 	Event      ticketEvent `json:"event"`
 	ReceivedAt time.Time   `json:"received_at"`
-	// Quantas vezes o mesmo event_id chegou, incluindo retries após falhas
-	// simuladas e entregas duplicadas.
+	// How many times the same event_id arrived, including retries following simulated
+	// failures and duplicate deliveries.
 	Deliveries int `json:"deliveries"`
 }
 
@@ -80,7 +74,7 @@ func (s *server) handleWebhook(w http.ResponseWriter, r *http.Request) {
 	var event ticketEvent
 
 	if err := json.NewDecoder(r.Body).Decode(&event); err != nil {
-		// 4xx: payload inválido não melhora com retry.
+		// 4xx: invalid payload; retrying will not help.
 		http.Error(w, "invalid payload", http.StatusBadRequest)
 		return
 	}
@@ -90,8 +84,8 @@ func (s *server) handleWebhook(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Lento antes de decidir a resposta: se o worker der timeout, ele não
-	// sabe se o email foi enviado ou não, e vai reenviar.
+	// Take your time before deciding on a response: if the worker times out, it
+	// won't know whether the email was sent or not, and will end up resending it.
 	if rand.Float64() < s.config.slowRate {
 		log.Printf("[slow] event=%s sleeping %s", event.EventID, s.config.slowDelay)
 
@@ -126,8 +120,8 @@ func (s *server) handleWebhook(w http.ResponseWriter, r *http.Request) {
 	deliveries := email.Deliveries
 	s.mu.Unlock()
 
-	// Idempotência: um event_id repetido responde 200 sem "enviar" outro
-	// email, assim o worker para de tentar.
+	// Idempotency: a repeated event_id results in a 200 response without "sending" another
+	// email, so the worker stops trying.
 	if duplicate {
 		log.Printf("[duplicate] event=%s deliveries=%d, email not sent again", event.EventID, deliveries)
 	} else {
@@ -144,8 +138,8 @@ func (s *server) handleWebhook(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// handleListEmails mostra os emails "enviados", útil para conferir o que
-// chegou sem ficar lendo os logs.
+// handleListEmails displays "sent" emails, which is useful for checking what
+// was sent without having to read through the logs.
 func (s *server) handleListEmails(w http.ResponseWriter, r *http.Request) {
 	s.mu.Lock()
 	result := make([]sentEmail, 0, len(s.order))

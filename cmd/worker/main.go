@@ -32,8 +32,8 @@ func main() {
 		webhookURL = "http://email-mock:8081/webhook"
 	}
 
-	// A tabela é criada pela api. Se o worker subir antes, o ClaimPending
-	// falha, o erro é logado e ele tenta de novo no próximo poll.
+	// The table is created by the API. If the worker starts up before that,
+	// ClaimPending fails, the error is logged, and it retries on the next poll.
 	oRepository := repository.NewOutboxRepository(db)
 
 	w := worker.New(oRepository, worker.Config{
