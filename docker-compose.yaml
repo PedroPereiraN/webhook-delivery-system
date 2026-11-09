@@ -8,8 +8,6 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
-      redis:
-        condition: service_started
     networks:
       - webhook-delivery-system-network
 
@@ -22,8 +20,6 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
-      redis:
-        condition: service_started
       email-mock:
         condition: service_started
     networks:
@@ -67,10 +63,6 @@ services:
     image: dpage/pgadmin4
     ports:
       - "5050:80"
-    networks:
-      - webhook-delivery-system-network
-  redis:
-    image: redis:7
     networks:
       - webhook-delivery-system-network
 
